@@ -3,17 +3,28 @@ import pandas as pd
 from scipy.optimize import curve_fit, fsolve
 import matplotlib.pyplot as plt
 import japanize_matplotlib
+from sklearn.metrics import mean_squared_error
 
 # 1. データ読み込み
 df = pd.read_csv('love_yourself_views.csv')
-
 df['datetime'] = pd.to_datetime(df['datetime'])
-
 df['t_num'] = (df['datetime'] - df['datetime'].iloc[0]).dt.total_seconds() / 86400
 
+use_first_day_only = True  # ← ここをFalseにすれば全期間フィット
+
+if use_first_day_only:
+    df_fit = df[df['t_num'] <= 3].copy()  # 1日まで
+else:
+    df_fit = df.copy()
+
 # t: 時間（例: 日数や経過時間）, S: 視聴回数
-t = df['t_num'].values
-S = df['views'].values
+# フィッティング用データ
+t = df_fit['t_num'].values
+S = df_fit['views'].values
+
+# フィッティングに使っていないデータ
+unused_mask = ~df.index.isin(df_fit.index)
+df_unused = df[unused_mask]
 
 # 2. フィッティング関数定義
 def model(t, M, lambd, k):
@@ -35,10 +46,18 @@ print(f"estimated parameters: M={M_fit}, λ={lambd_fit}, k={k_fit}")
 # 5. フィット結果の描画
 plt.figure(figsize=(10, 6))  # グラフサイズを大きく
 
-plt.scatter(t, S, label='実データ', color='#1f77b4', edgecolor='black', s=15, alpha=0.8, marker='o')
-plt.plot(t, model(t, *params), label='フィッティング', color='#d62728', linewidth=2.5)
+# フィッティングに使ったデータ（青丸）
+plt.scatter(df_fit['t_num'], df_fit['views'], label='フィッティング用データ', color='#1f77b4', edgecolor='black', s=20, alpha=0.9, marker='o')
 
-plt.title('Love yourself! 視聴回数のフィッティング', fontsize=18, fontweight='bold')
+# フィッティングに使っていないデータ（灰色×）
+if not df_unused.empty:
+    plt.scatter(df_unused['t_num'], df_unused['views'], label='未使用データ', color='gray', edgecolor='black', s=20, alpha=0.5, marker='x')
+
+# フィッティング曲線（全データ期間に拡張）
+t_curve = np.linspace(df['t_num'].min(), df['t_num'].max(), 500)
+plt.plot(t_curve, model(t_curve, *params), label='フィッティング', color='#d62728', linewidth=2.5)
+
+plt.title(f"Love yourself! 視聴回数のフィッティング（{df_fit['t_num'].max():.1f}日までのデータ使用）", fontsize=18, fontweight='bold')
 plt.xlabel('経過日数', fontsize=14)
 plt.ylabel('視聴回数', fontsize=14)
 
@@ -91,5 +110,44 @@ plt.gca().text(
     color='green', fontsize=12, verticalalignment='bottom', horizontalalignment='left'
 )
 
+plt.tight_layout()
+plt.show()
+
+# === 追加: どこまでのデータで十分予測できるか調査 ===
+max_t = df['t_num'].max()
+test_points = np.arange(0.5, max_t, 0.5)
+errors = []
+
+for t_limit in test_points:
+    df_fit_tmp = df[df['t_num'] <= t_limit]
+    t_tmp = df_fit_tmp['t_num'].values
+    S_tmp = df_fit_tmp['views'].values
+    if len(t_tmp) < 3:
+        errors.append((t_limit, np.nan))
+        continue
+    try:
+        params_tmp, _ = curve_fit(model, t_tmp, S_tmp, p0=p0)
+    except Exception:
+        errors.append((t_limit, np.nan))
+        continue
+    # 全期間予測
+    t_all = df['t_num'].values
+    S_pred = model(t_all, *params_tmp)
+    # 未使用データ部分の誤差
+    mask_unused = df['t_num'] > t_limit
+    if mask_unused.sum() > 0:
+        rmse = np.sqrt(mean_squared_error(df.loc[mask_unused, 'views'], S_pred[mask_unused]))
+        errors.append((t_limit, rmse))
+    else:
+        errors.append((t_limit, np.nan))
+
+# 誤差推移のグラフ
+err_arr = np.array(errors)
+plt.figure(figsize=(8, 4))
+plt.plot(err_arr[:,0], err_arr[:,1], marker='o')
+plt.xlabel('フィッティングに使う最大日数')
+plt.ylabel('未使用データへのRMSE')
+plt.title('どこまでのデータで十分予測できるか')
+plt.grid(True, linestyle='--', alpha=0.6)
 plt.tight_layout()
 plt.show()
